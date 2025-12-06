@@ -995,6 +995,44 @@ Blockly.WorkspaceSvg.prototype.setVisible = function(isVisible) {
 };
 
 /**
+ * Check if a block is visible in the current viewport.
+ * @param {!Blockly.BlockSvg} block The block to check.
+ * @return {boolean} True if the block is visible in the viewport.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.isBlockInViewport_ = function(block) {
+  var metrics = this.getMetrics();
+  if (!metrics) {
+    return true; // If we can't get metrics, render all blocks
+  }
+
+  var blockRect = block.getBoundingRectangle();
+  var blockLeft = blockRect.topLeft.x;
+  var blockRight = blockRect.bottomRight.x;
+  var blockTop = blockRect.topLeft.y;
+  var blockBottom = blockRect.bottomRight.y;
+
+  // Convert block coordinates to viewport coordinates
+  var viewLeft = -metrics.viewLeft;
+  var viewRight = viewLeft + metrics.viewWidth;
+  var viewTop = -metrics.viewTop;
+  var viewBottom = viewTop + metrics.viewHeight;
+
+  // Add some padding to ensure blocks near the edge are rendered
+  var padding = 100; // pixels
+  viewLeft -= padding;
+  viewRight += padding;
+  viewTop -= padding;
+  viewBottom += padding;
+
+  // Check if block intersects with viewport
+  return !(blockRight < viewLeft || 
+           blockLeft > viewRight || 
+           blockBottom < viewTop || 
+           blockTop > viewBottom);
+};
+
+/**
  * Render all blocks in workspace.
  */
 Blockly.WorkspaceSvg.prototype.render = function() {
@@ -1002,7 +1040,11 @@ Blockly.WorkspaceSvg.prototype.render = function() {
   var blocks = this.getAllBlocks();
   // Render each block.
   for (var i = blocks.length - 1; i >= 0; i--) {
-    blocks[i].render(false);
+    var block = blocks[i];
+    // Only render blocks that are in the viewport
+    if (this.isBlockInViewport_(block)) {
+      block.render(false);
+    }
   }
 };
 

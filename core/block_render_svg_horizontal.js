@@ -375,11 +375,19 @@ Blockly.BlockSvg.prototype.getHeightWidth = function(opt_ignoreFields) {
 
 /**
  * Render the block.
- * Lays out and reflows a block based on its contents and settings.
  * @param {boolean=} opt_bubble If false, just render this block.
  *   If true, also render block's parent, grandparent, etc.  Defaults to true.
  */
 Blockly.BlockSvg.prototype.render = function(opt_bubble) {
+  // Skip rendering if block is not intersecting with viewport
+  // (unless it's being forced to render)
+  if (!this.intersects_ && opt_bubble !== true) {
+    // Still need to mark as rendered and update intersection observer
+    this.rendered = true;
+    this.updateIntersectionObserver();
+    return;
+  }
+
   Blockly.Field.startCache();
   this.rendered = true;
 
