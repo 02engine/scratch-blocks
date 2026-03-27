@@ -406,10 +406,25 @@ Blockly.Xml.textToDom = function(text) {
  * @return {Array.<string>} An array containing new block ids.
  */
 Blockly.Xml.clearWorkspaceAndLoadFromXml = function(xml, workspace) {
+  var deferBlockRendering = !!(workspace.rendered &&
+      workspace.setOffscreenTopBlockCullingEnabled &&
+      workspace.offscreenTopBlockCullingEnabled_);
+  if (deferBlockRendering) {
+    workspace.deferBlockRendering_ = true;
+  }
   workspace.setResizesEnabled(false);
   workspace.setToolboxRefreshEnabled(false);
   workspace.clear();
   var blockIds = Blockly.Xml.domToWorkspace(xml, workspace);
+  if (deferBlockRendering) {
+    workspace.deferBlockRendering_ = false;
+    if (workspace.renderVisibleTopBlocks) {
+      workspace.renderVisibleTopBlocks();
+    }
+    if (workspace.queueIntersectionCheck) {
+      workspace.queueIntersectionCheck();
+    }
+  }
   workspace.setResizesEnabled(true);
   workspace.setToolboxRefreshEnabled(true);
   return blockIds;
@@ -583,28 +598,35 @@ Blockly.Xml.domToBlock = function(xmlBlock, workspace) {
     // Generate list of all blocks.
     var blocks = topBlock.getDescendants(false);
     if (workspace.rendered) {
+      var deferBlockRendering = !!workspace.deferBlockRendering_;
       // Hide connections to speed up assembly.
       topBlock.setConnectionsHidden(true);
       // Render each block.
       for (var i = blocks.length - 1; i >= 0; i--) {
         blocks[i].initSvg();
       }
-      for (var i = blocks.length - 1; i >= 0; i--) {
-        blocks[i].render(false);
-      }
-      // Populating the connection database may be deferred until after the
-      // blocks have rendered.
-      if (!workspace.isFlyout) {
-        setTimeout(function() {
-          if (topBlock.workspace) {  // Check that the block hasn't been deleted.
-            topBlock.setConnectionsHidden(false);
-          }
-        }, 1);
+      if (!deferBlockRendering) {
+        for (var i = blocks.length - 1; i >= 0; i--) {
+          blocks[i].render(false);
+        }
+        // Populating the connection database may be deferred until after the
+        // blocks have rendered.
+        if (!workspace.isFlyout) {
+          setTimeout(function() {
+            if (topBlock.workspace) {  // Check that the block hasn't been deleted.
+              topBlock.setConnectionsHidden(false);
+            }
+          }, 1);
+        }
+      } else {
+        topBlock.deferredRenderPending_ = true;
       }
       topBlock.updateDisabled();
-      // Allow the scrollbars to resize and move based on the new contents.
-      // TODO(@picklesrus): #387. Remove when domToBlock avoids resizing.
-      workspace.resizeContents();
+      if (!deferBlockRendering) {
+        // Allow the scrollbars to resize and move based on the new contents.
+        // TODO(@picklesrus): #387. Remove when domToBlock avoids resizing.
+        workspace.resizeContents();
+      }
     } else {
       for (var i = blocks.length - 1; i >= 0; i--) {
         blocks[i].initModel();

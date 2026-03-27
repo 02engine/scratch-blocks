@@ -6,6 +6,7 @@ Blockly.IntersectionObserver = function(workspace) {
   this.workspace = workspace;
   this.observing = [];
   this.intersectionCheckQueued = false;
+  this.intersectionCheckFrame_ = null;
   this.checkForIntersections = this.checkForIntersections.bind(this);
 };
 
@@ -26,6 +27,10 @@ Blockly.IntersectionObserver.prototype.unobserve = function(block) {
 };
 
 Blockly.IntersectionObserver.prototype.dispose = function() {
+  if (this.intersectionCheckFrame_ !== null) {
+    cancelAnimationFrame(this.intersectionCheckFrame_);
+    this.intersectionCheckFrame_ = null;
+  }
   this.observing = [];
   this.workspace = null;
 };
@@ -35,18 +40,16 @@ Blockly.IntersectionObserver.prototype.queueIntersectionCheck = function() {
     return;
   }
   this.intersectionCheckQueued = true;
-  // Check for intersections on the next microtick
-  // Prefer to use the native method when available, otherwise fallback to a Promise-based polyfill
-  if (window.queueMicrotask) {
-    window.queueMicrotask(this.checkForIntersections);
+  if (window.requestAnimationFrame) {
+    this.intersectionCheckFrame_ = window.requestAnimationFrame(this.checkForIntersections);
   } else {
-    // eslint-disable-next-line no-undef
-    Promise.resolve().then(this.checkForIntersections);
+    setTimeout(this.checkForIntersections, 16);
   }
 };
 
 Blockly.IntersectionObserver.prototype.checkForIntersections = function() {
   this.intersectionCheckQueued = false;
+  this.intersectionCheckFrame_ = null;
 
   if (!this.workspace) {
     return;

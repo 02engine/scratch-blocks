@@ -63,6 +63,22 @@ Blockly.WorkspaceDragger = function(workspace) {
    */
   this.startScrollXY_ = new goog.math.Coordinate(
       workspace.scrollX, workspace.scrollY);
+
+  /**
+   * Pending drag update scheduled for the next animation frame.
+   * @type {?number}
+   * @private
+   */
+  this.pendingDragFrame_ = null;
+
+  /**
+   * Latest requested scrollbar positions during a drag.
+   * @type {?{x: number, y: number}}
+   * @private
+   */
+  this.pendingScrollUpdate_ = null;
+
+  this.flushDrag_ = this.flushDrag_.bind(this);
 };
 
 /**
@@ -70,7 +86,12 @@ Blockly.WorkspaceDragger = function(workspace) {
  * @package
  */
 Blockly.WorkspaceDragger.prototype.dispose = function() {
+  if (this.pendingDragFrame_ !== null) {
+    cancelAnimationFrame(this.pendingDragFrame_);
+    this.pendingDragFrame_ = null;
+  }
   this.workspace_ = null;
+  this.pendingScrollUpdate_ = null;
 };
 
 /**
@@ -93,6 +114,7 @@ Blockly.WorkspaceDragger.prototype.startDrag = function() {
 Blockly.WorkspaceDragger.prototype.endDrag = function(currentDragDeltaXY) {
   // Make sure everything is up to date.
   this.drag(currentDragDeltaXY);
+  this.flushDrag_();
   this.workspace_.resetDragSurface();
 };
 
@@ -128,5 +150,45 @@ Blockly.WorkspaceDragger.prototype.drag = function(currentDragDeltaXY) {
  * @private
  */
 Blockly.WorkspaceDragger.prototype.updateScroll_ = function(x, y) {
-  this.workspace_.scrollbar.set(x, y);
+  this.pendingScrollUpdate_ = {x: x, y: y};
+  if (this.pendingDragFrame_ !== null) {
+    return;
+  }
+  this.pendingDragFrame_ = requestAnimationFrame(this.flushDrag_);
+};
+
+/**
+ * Apply the latest pending drag update using cached metrics from drag start.
+ * This avoids recalculating full workspace metrics on every mousemove.
+ * @private
+ */
+Blockly.WorkspaceDragger.prototype.flushDrag_ = function() {
+  if (!this.workspace_ || !this.pendingScrollUpdate_) {
+    this.pendingDragFrame_ = null;
+    return;
+  }
+
+  var update = this.pendingScrollUpdate_;
+  this.pendingScrollUpdate_ = null;
+  this.pendingDragFrame_ = null;
+
+  var metrics = this.startDragMetrics_;
+  var workspace = this.workspace_;
+
+  workspace.scrollX = -update.x - metrics.contentLeft;
+  workspace.scrollY = -update.y - metrics.contentTop;
+
+  var translatedX = workspace.scrollX + metrics.absoluteLeft;
+  var translatedY = workspace.scrollY + metrics.absoluteTop;
+  workspace.translate(translatedX, translatedY);
+  if (workspace.grid_) {
+    workspace.grid_.moveTo(translatedX, translatedY);
+  }
+
+  if (workspace.scrollbar) {
+    var hHandlePosition = update.x * workspace.scrollbar.hScroll.ratio_;
+    var vHandlePosition = update.y * workspace.scrollbar.vScroll.ratio_;
+    workspace.scrollbar.hScroll.setHandlePosition(hHandlePosition);
+    workspace.scrollbar.vScroll.setHandlePosition(vHandlePosition);
+  }
 };

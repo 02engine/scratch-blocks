@@ -177,6 +177,71 @@ Blockly.WorkspaceSvg.prototype.resizesEnabled_ = true;
 Blockly.WorkspaceSvg.prototype.toolboxRefreshEnabled_ = true;
 
 /**
+ * Whether this workspace should hide offscreen top-level scripts and defer
+ * rendering until they enter the viewport.
+ * @type {boolean}
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.offscreenTopBlockCullingEnabled_ = false;
+
+/**
+ * Whether block XML loading should defer the expensive render pass until
+ * visible top-level scripts are known.
+ * @type {boolean}
+ * @package
+ */
+Blockly.WorkspaceSvg.prototype.deferBlockRendering_ = false;
+
+/**
+ * Whether a culling refresh should run once the current drag finishes.
+ * @type {boolean}
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.intersectionCheckPendingAfterDrag_ = false;
+
+/**
+ * Pending wheel update scheduled for the next animation frame.
+ * @type {?number}
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.pendingWheelFrame_ = null;
+
+/**
+ * Accumulated wheel scroll delta waiting to be applied.
+ * @type {?goog.math.Coordinate}
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.pendingWheelScrollDelta_ = null;
+
+/**
+ * Accumulated ctrl+wheel zoom delta waiting to be applied.
+ * @type {number}
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.pendingWheelZoomDelta_ = 0;
+
+/**
+ * Latest ctrl+wheel zoom anchor position in SVG coordinates.
+ * @type {?goog.math.Coordinate}
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.pendingWheelZoomPosition_ = null;
+
+/**
+ * Pending timeout used to defer expensive grid updates during continuous zoom.
+ * @type {?number}
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.pendingGridUpdateTimer_ = null;
+
+/**
+ * Whether the current scale change should defer grid updates.
+ * @type {boolean}
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.deferGridUpdate_ = false;
+
+/**
  * Current horizontal scrolling offset in pixel units.
  * @type {number}
  */
@@ -503,6 +568,14 @@ Blockly.WorkspaceSvg.prototype.createDom = function(opt_backgroundClass) {
 Blockly.WorkspaceSvg.prototype.dispose = function() {
   // Stop rerendering.
   this.rendered = false;
+  if (this.pendingWheelFrame_ !== null) {
+    cancelAnimationFrame(this.pendingWheelFrame_);
+    this.pendingWheelFrame_ = null;
+  }
+  if (this.pendingGridUpdateTimer_ !== null) {
+    clearTimeout(this.pendingGridUpdateTimer_);
+    this.pendingGridUpdateTimer_ = null;
+  }
   if (this.currentGesture_) {
     this.currentGesture_.cancel();
   }
@@ -693,8 +766,98 @@ Blockly.WorkspaceSvg.prototype.resizeContents = function() {
 };
 
 Blockly.WorkspaceSvg.prototype.queueIntersectionCheck = function() {
-  if (this.intersectionObserver) {
+  if (!this.offscreenTopBlockCullingEnabled_) {
+    return;
+  }
+  if (this.isDragSurfaceActive_ || this.isDragging()) {
+    this.intersectionCheckPendingAfterDrag_ = true;
+    return;
+  }
+  if (this.offscreenTopBlockCullingEnabled_) {
+    this.renderVisibleTopBlocks();
+  }
+  if (this.intersectionObserver && this.offscreenTopBlockCullingEnabled_) {
     this.intersectionObserver.queueIntersectionCheck();
+  }
+};
+
+/**
+ * Enable or disable offscreen top-level script culling.
+ * @param {boolean} enabled Whether culling should be active.
+ */
+Blockly.WorkspaceSvg.prototype.setOffscreenTopBlockCullingEnabled = function(enabled) {
+  if (this.offscreenTopBlockCullingEnabled_ == enabled) {
+    if (enabled) {
+      this.queueIntersectionCheck();
+    }
+    return;
+  }
+
+  this.offscreenTopBlockCullingEnabled_ = enabled;
+  var topBlocks = this.getTopBlocks(false);
+  var needsFullRender = false;
+  for (var i = 0; i < topBlocks.length; i++) {
+    var block = topBlocks[i];
+    block.setIntersects(true);
+    if (!enabled && block.deferredRenderPending_) {
+      needsFullRender = true;
+    }
+  }
+
+  if (!enabled && needsFullRender) {
+    this.render();
+    if (!this.isFlyout) {
+      setTimeout(function() {
+        for (var i = 0; i < topBlocks.length; i++) {
+          var block = topBlocks[i];
+          if (block.workspace) {
+            block.setConnectionsHidden(false);
+            block.deferredRenderPending_ = false;
+          }
+        }
+      }, 1);
+    }
+  }
+
+  this.queueIntersectionCheck();
+};
+
+/**
+ * Ensure that any visible top-level scripts are rendered before intersection
+ * checks hide the offscreen ones.
+ */
+Blockly.WorkspaceSvg.prototype.renderVisibleTopBlocks = function() {
+  var topBlocks = this.getTopBlocks(false);
+  for (var i = 0; i < topBlocks.length; i++) {
+    var block = topBlocks[i];
+    if (!this.isBlockInViewport_(block)) {
+      continue;
+    }
+    this.ensureTopBlockRendered_(block);
+  }
+};
+
+/**
+ * Render a top-level script if it was deferred during XML loading.
+ * @param {!Blockly.BlockSvg} block The block to ensure is rendered.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.ensureTopBlockRendered_ = function(block) {
+  if (block.deferredRenderPending_) {
+    block.render(false);
+    block.deferredRenderPending_ = false;
+    this.resizeContents();
+    if (!this.isFlyout) {
+      setTimeout(function() {
+        if (block.workspace) {
+          block.setConnectionsHidden(false);
+        }
+      }, 1);
+    }
+    return;
+  }
+  if (!block.rendered) {
+    block.render(false);
   }
 };
 
@@ -903,6 +1066,10 @@ Blockly.WorkspaceSvg.prototype.resetDragSurface = function() {
       'scale(' + this.scale + ')';
   this.svgBlockCanvas_.setAttribute('transform', translation);
   this.svgBubbleCanvas_.setAttribute('transform', translation);
+  if (this.intersectionCheckPendingAfterDrag_) {
+    this.intersectionCheckPendingAfterDrag_ = false;
+    this.queueIntersectionCheck();
+  }
 };
 
 /**
@@ -1479,7 +1646,7 @@ Blockly.WorkspaceSvg.prototype.onMouseWheel_ = function(e) {
     var delta = -e.deltaY / PIXELS_PER_ZOOM_STEP * multiplier;
     var position = Blockly.utils.mouseToSvg(e, this.getParentSvg(),
         this.getInverseScreenCTM());
-    this.zoom(position.x, position.y, delta);
+    this.scheduleWheelZoom_(position.x, position.y, delta);
   } else {
     // This is a regular mouse wheel event - scroll the workspace
     // First hide the WidgetDiv without animation
@@ -1487,21 +1654,105 @@ Blockly.WorkspaceSvg.prototype.onMouseWheel_ = function(e) {
     Blockly.WidgetDiv.hide(true);
     Blockly.DropDownDiv.hideWithoutAnimation();
 
-    var x = this.scrollX - e.deltaX * multiplier;
-    var y = this.scrollY - e.deltaY * multiplier;
+    var deltaX = e.deltaX * multiplier;
+    var deltaY = e.deltaY * multiplier;
 
     if (e.shiftKey && e.deltaX === 0) {
       // Scroll horizontally (based on vertical scroll delta)
       // This is needed as for some browser/system combinations which do not
       // set deltaX. See #1662.
-      x = this.scrollX - e.deltaY * multiplier;
-      y = this.scrollY; // Don't scroll vertically
+      deltaX = e.deltaY * multiplier;
+      deltaY = 0;
     }
 
-    this.startDragMetrics = this.getMetrics();
-    this.scroll(x, y);
+    this.scheduleWheelScroll_(deltaX, deltaY);
   }
   e.preventDefault();
+};
+
+/**
+ * Schedule a wheel-based workspace scroll for the next animation frame.
+ * @param {number} deltaX Horizontal delta in CSS pixels.
+ * @param {number} deltaY Vertical delta in CSS pixels.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.scheduleWheelScroll_ = function(deltaX, deltaY) {
+  if (!this.pendingWheelScrollDelta_) {
+    this.pendingWheelScrollDelta_ = new goog.math.Coordinate(0, 0);
+  }
+  this.pendingWheelScrollDelta_.x += deltaX;
+  this.pendingWheelScrollDelta_.y += deltaY;
+  this.scheduleWheelUpdate_();
+};
+
+/**
+ * Schedule a ctrl+wheel zoom for the next animation frame.
+ * @param {number} x Zoom anchor X in SVG coordinates.
+ * @param {number} y Zoom anchor Y in SVG coordinates.
+ * @param {number} delta Zoom delta.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.scheduleWheelZoom_ = function(x, y, delta) {
+  this.pendingWheelZoomDelta_ += delta;
+  this.pendingWheelZoomPosition_ = new goog.math.Coordinate(x, y);
+  this.scheduleWheelUpdate_();
+};
+
+/**
+ * Ensure a pending wheel update is flushed on the next animation frame.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.scheduleWheelUpdate_ = function() {
+  if (this.pendingWheelFrame_ !== null) {
+    return;
+  }
+  this.pendingWheelFrame_ = requestAnimationFrame(function() {
+    this.pendingWheelFrame_ = null;
+    this.flushWheelUpdate_();
+  }.bind(this));
+};
+
+/**
+ * Apply any queued wheel scroll or zoom updates.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.flushWheelUpdate_ = function() {
+  if (this.pendingWheelZoomDelta_ && this.pendingWheelZoomPosition_) {
+    var zoomDelta = this.pendingWheelZoomDelta_;
+    var zoomPosition = this.pendingWheelZoomPosition_;
+    this.pendingWheelZoomDelta_ = 0;
+    this.pendingWheelZoomPosition_ = null;
+    this.deferGridUpdate_ = true;
+    this.zoom(zoomPosition.x, zoomPosition.y, zoomDelta);
+    this.deferGridUpdate_ = false;
+    this.scheduleDeferredGridUpdate_();
+  }
+
+  if (this.pendingWheelScrollDelta_) {
+    var scrollDelta = this.pendingWheelScrollDelta_;
+    this.pendingWheelScrollDelta_ = null;
+    this.startDragMetrics = this.getMetrics();
+    this.scroll(this.scrollX - scrollDelta.x, this.scrollY - scrollDelta.y);
+  }
+};
+
+/**
+ * Schedule a deferred grid redraw after interactive zoom settles.
+ * @private
+ */
+Blockly.WorkspaceSvg.prototype.scheduleDeferredGridUpdate_ = function() {
+  if (!this.grid_) {
+    return;
+  }
+  if (this.pendingGridUpdateTimer_ !== null) {
+    clearTimeout(this.pendingGridUpdateTimer_);
+  }
+  this.pendingGridUpdateTimer_ = setTimeout(function() {
+    this.pendingGridUpdateTimer_ = null;
+    if (this.grid_) {
+      this.grid_.update(this.scale);
+    }
+  }.bind(this), 80);
 };
 
 /**
@@ -1944,7 +2195,11 @@ Blockly.WorkspaceSvg.prototype.setScale = function(newScale) {
   }
   this.scale = newScale;
   if (this.grid_) {
-    this.grid_.update(this.scale);
+    if (this.deferGridUpdate_) {
+      this.scheduleDeferredGridUpdate_();
+    } else {
+      this.grid_.update(this.scale);
+    }
   }
   if (this.scrollbar) {
     this.scrollbar.resize();

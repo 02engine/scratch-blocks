@@ -172,6 +172,7 @@ Blockly.BlockSvg.prototype.initSvg = function() {
   if (!this.getSvgRoot().parentNode) {
     this.workspace.getCanvas().appendChild(this.getSvgRoot());
   }
+  this.updateIntersectionObserver();
 };
 
 /**
