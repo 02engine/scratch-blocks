@@ -1304,7 +1304,18 @@ Blockly.WorkspaceSvg.prototype.reportValue = function(id, value) {
   var contentDiv = Blockly.DropDownDiv.getContentDiv();
   var valueReportBox = goog.dom.createElement('div');
   valueReportBox.setAttribute('class', 'valueReportBox');
-  valueReportBox.textContent = value;
+  if (value && typeof value === 'object' && typeof value.replace === 'function') {
+    var rendered = value.replace();
+    if (rendered && rendered.nodeType) {
+      valueReportBox.appendChild(rendered);
+    } else if (typeof rendered === 'string') {
+      valueReportBox.innerHTML = rendered;
+    } else {
+      valueReportBox.textContent = value.toString ? value.toString() : String(rendered);
+    }
+  } else {
+    valueReportBox.textContent = value;
+  }
   contentDiv.appendChild(valueReportBox);
   Blockly.DropDownDiv.setColour(
       Blockly.Colours.valueReportBackground,
